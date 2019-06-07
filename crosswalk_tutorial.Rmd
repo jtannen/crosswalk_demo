@@ -1,0 +1,381 @@
+---
+title: "crosswalk_tutorial"
+author: "Jonathan Tannen"
+date: "June 4, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning=FALSE,
+  message=FALSE,
+  dpi=300,
+  root.dir = "C:/Users/Jonathan Tannen/Dropbox/sixty_six/posts/crosswalk_tutorial/",
+  fig.height=6,
+  fig.width=6
+)
+
+setwd("C:/Users/Jonathan Tannen/Dropbox/sixty_six/posts/crosswalk_tutorial/")
+```
+
+```{r example}
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggmap)
+
+sixtysix_colors <- list(
+  red="#D0445E",
+  blue="#0077E0",
+  purple="#C92EC4",
+  green="#009871",
+  orange="#9C7200",
+  grey="#009871",
+  light_red="#EE6178"
+)
+
+theme_map_sixtysix <- function(){ 
+  ggthemes::theme_map() %+replace%
+    theme(
+      text = ggthemes::theme_fivethirtyeight()$text,
+      title = ggthemes::theme_fivethirtyeight()$plot.title,
+      panel.grid.major = element_line(color="grey90")
+    )
+}
+
+divs_16 <- st_read("data/division_shapefiles/2016/2016_Ward_Divisions.shp") %>%
+  rename(warddiv16 = WARD_DIVSN) %>%
+  mutate(
+    DIVSN = sprintf("%02d", DIVSN),
+    WARD = sprintf("%02d", WARD)
+  ) %>%
+  st_transform(4326)
+
+divs_19 <- st_read("data/division_shapefiles/2019/Political_Divisions.shp") %>%
+  rename(warddiv19 = DIVISION_N) %>%
+  mutate(WARD = substr(warddiv19, 1, 2))%>%
+  st_transform(4326)
+
+ggplot(
+  divs_16 %>% filter(WARD == "05")
+) +
+    geom_sf(
+    color = sixtysix_colors$light_red,
+    size=2, 
+    fill=NA
+  ) + 
+  geom_text(
+    aes(x=X, y=Y, label = DIVSN),
+    data = with(
+      divs_16 %>% filter(WARD == "05"),
+      data.frame(DIVSN, st_centroid(geometry) %>% st_coordinates())
+    ),
+    color=sixtysix_colors$light_red,
+    size=4,
+    fontface="bold"
+  ) +
+  geom_sf(
+    data=divs_19 %>% filter(WARD == "05"),
+    color = "black",
+    size=1,
+    fill=NA
+  ) +
+  geom_text(
+    aes(x=X, y=Y, label = SHORT_DIV_),
+    data = with(
+      divs_19 %>% filter(WARD == "05"),
+      data.frame(SHORT_DIV_, st_centroid(geometry) %>% st_coordinates())
+    ),
+    color="black",
+    size=4
+  ) +
+  geom_text(
+    aes(label=year, x=x, y=y, fontface=fontface, color=color),
+    data=tribble(
+      ~year, ~x, ~y, ~fontface, ~color,
+      2016, -75.12607, 39.941, "bold", sixtysix_colors$light_red,
+      2019, -75.12607, 39.943, "plain", "black"
+    ),
+    hjust=1
+  ) +
+  scale_color_identity(guide=FALSE) +
+  theme_map_sixtysix() +
+  ggtitle("Division change in Ward 5")
+
+
+```
+
+We have two types of transformations to make. Some divisions from 2016 get split up into multiple 2019 divisions: 2016's division 21 becomes 21, 33, and 34. Also, parts of some 2016 divisions get combined to form new ones: the new division 10 consists of paste of 2016 10 and 26.
+
+## Areal Weighting
+
+Crosswalking values is usually done pretty simply: we take the counts from the 2016 data, and apportion them to 2019 boundaries. Usually, we do this by calculating the area of the intersection ("areal weighting"):
+```{r prop_area}
+areal_weights <- st_intersection(
+  divs_16, 
+  divs_19
+) %>% 
+  mutate(area = st_area(geometry)) %>% 
+  as.data.frame() %>% 
+  select(warddiv16, warddiv19, area) %>% 
+  group_by(warddiv16) %>% 
+  mutate(prop_of_16 = as.numeric(area / sum(area))) 
+
+areal_weights %>%
+  filter(warddiv16 == "0521")
+```
+
+The above shows us that Division 05-21 in 2016 was split up into five divisions for 2019. Two of them--1802 and 0530--look like noise; the areas are tiny and probably represent a trivial move in the boundary. 
+
+To apportion 2016's votes to 2019 boundaries, we would give new division 05-34 69.8% of the votes, 05-33 18.5%, and 05-21 11.6%. Done.
+
+> Exercise: What assumptions make this apportionment valid? (answer in appendix)
+
+## Population Weighting
+I usually do one better than areal weighting: population weighting. Instead of calculating the area of the intersection, I calculate the population living within each intersection. We then apportion 2016 counts proportionally to the population in each boundary. For example, if we knew that all of 2016's division 21 lived in the Southwest of the division, then we would apportion all of its votes to new division 34.
+
+We need fine-scale data to make this calculation. Luckily, the Census provides us with block-level populations every ten years.
+
+```{r phila_blocks}
+phila_blocks <- st_read("data/census_blocks/tl_2010_42101_tabblock10.shp") %>%
+  st_transform(4326)
+
+## We'll only deal with centroids, since blocks are contained within divisions
+phila_blocks <- st_centroid(phila_blocks)
+
+phila_block_pops <- read.csv(
+  "data/census_blocks/phila_block_pops.csv", 
+  colClasses=c("character","numeric")
+)
+
+phila_blocks <- left_join(phila_blocks, phila_block_pops)
+```
+
+```{r get_pop_of_geoms}
+get_pop_of_geoms <- function(g, idcol, blocks=phila_blocks){
+  if(st_crs(g) != st_crs(blocks)) stop("g and blocks must have same crs.")
+  intersection <- st_intersects(blocks, g)
+  nmatch <- sapply(intersection, length)
+  
+  if(sum(blocks$pop10[nmatch==0]) > 0) stop("blocks weren't matched; population was lost.")
+  if(any(nmatch > 1)) stop("blocks matched to multiple geometries. This shouldn't happen.")
+  
+  matches <- data.frame(
+    blocki = (1:length(nmatch))[nmatch == 1], 
+    gi = unlist(intersection)
+  ) %>% mutate(
+    block_id = blocks$GEOID10[blocki],
+    g_id = g[[idcol]][gi]
+  ) %>%
+    left_join(
+      blocks %>% as.data.frame %>% select(pop10, GEOID10),
+      by = c("block_id"="GEOID10")
+    ) %>%
+    group_by(g_id) %>%
+    summarise(pop10 = sum(pop10))
+  
+  if(sum(matches$pop10) != sum(blocks$pop10)) stop("Population was lost/added. Something's wrong.")
+  
+  names(matches)[1] <- idcol
+  
+  return(matches)
+}
+
+get_crosswalk <- function(g1, g2, idcol1, idcol2, blocks=phila_blocks){
+  if(st_crs(g1) != st_crs(g2)) stop("g1 and g2 must have same crs.")
+  g1$id1 <- g1[[idcol1]]
+  g2$id2 <- g2[[idcol2]]
+  
+  intersection <- st_intersection(g1, g2)
+  intersection <- intersection %>%
+    mutate(id1_id2 = paste(id1, id2, sep="_")) %>%
+    select(id1_id2, geometry)
+  pop_of_intersection <- get_pop_of_geoms(intersection, "id1_id2", blocks)
+  crosswalk <- pop_of_intersection %>%
+    separate(id1_id2, c("id1", "id2"), sep = "_") %>%
+    group_by(id1, id2) %>%
+    summarise(pop10 = sum(pop10)) %>%
+    group_by(id1) %>%
+    mutate(frac_of_g1 = {if(sum(pop10) > 0) pop10/sum(pop10) else 1/n()}) %>%
+    group_by(id2) %>%
+    mutate(frac_of_g2 = {if(sum(pop10) > 0) pop10/sum(pop10) else 1/n()}) %>%
+    group_by()
+  
+  names(crosswalk)[1:2] <- c(idcol1, idcol2)
+  return(crosswalk)
+}
+
+crosswalk_16_19 <- get_crosswalk(divs_16, divs_19, "warddiv16", "warddiv19")
+head(crosswalk_16_19)
+```
+What happened to 05-10 and 05-21, above? 
+
+```{r check_for_ward5}
+crosswalk_16_19 %>% 
+  filter(warddiv16 %in% c("0521", "0510"))
+```
+
+The crosswalk says that 05-21 was split into 05-21, 33, and 34, in proportions of 0.33, 0.43, and 0.24. Notice that crosswalking *back*, it says that all of 2019's 05-33 is contained in 2016's 05-21, which is correct (`frac_of_g2 = 1.0`).
+
+It says that 2019's 05-30 is only 0.12 within 2016's 05-10. Most of its population actually comes from that region to the West, which is smaller in area.
+
+> Exercise 2: What is the assumption(s) in using population-based weighting?
+
+Finally, let's crosswalk the raw data from 2016 forward to 2019 divisions. The folder `data/raw_votes` contains csv files of Philadelphia elections as downloaded directly from [www.philadelphiavotes.com](www.philadelphiavotes.com).
+```{r mapping votes}
+general_16 <- read.csv("data/raw_votes/2016_general.csv") %>%
+  mutate(warddiv16 = paste0(sprintf("%02d", WARD), sprintf("%02d", DIVISION)))
+head(general_16)
+```
+
+To crosswalk, we will apportion each 2016 division's votes to 2019 boundaries proportional to the 2016 fraction of population.
+```{r crosswalk_16_to_19}
+general_16_crosswalked <- general_16 %>%
+  left_join(crosswalk_16_19, by = "warddiv16") %>%
+  group_by(TYPE, OFFICE, CANDIDATE, PARTY, warddiv19) %>%
+  summarise(VOTES = sum(VOTES * frac_of_g1))
+
+head(general_16_crosswalked)
+```
+We're done! We have 2016's results in 2019 boundaries.
+
+Just for finality, let's loop through all years and store the outputs. Sounds easy, but... oof.
+
+I've only been able to find shapefiles for divisions from a handful of years. The amazing folks at Azavea and the Commissioners' Office have put together a batch of historical division boundaries, but even their herculean efforts don't perfectly cover all recent elections. I've only got boundaries for 2005, 2008-2013, 2016, and 2019. For each election, I've chosen the boundaries that appear to fit best based on lost votes, but some of them have still lost votes. I document those mistakes below, but please use the division-level results with caution for these years.
+
+> Note: Have more complete division boundaries? Want to be a hero and create them from the text description of boundaries? Let me know!
+
+```{r all_years}
+crosswalk_years <- list.dirs("data/division_shapefiles", full.names = F)
+print(crosswalk_years)
+
+for(crosswalk_year in crosswalk_years[!crosswalk_years %in% c("", "2019")]){
+  crosswalk_year2 <- substr(crosswalk_year, 3, 4)
+  div_dir <- sprintf("data/division_shapefiles/%s", crosswalk_year)
+  div_path <- list.files(div_dir, pattern = ".*\\.shp$", full.names = TRUE)
+  g1 <- st_read(div_path) %>% 
+    mutate(warddiv = paste0(sprintf("%02d", WARD), sprintf("%02d", DIVSN))) %>%
+    st_transform(4326)
+  
+  idcol <- paste0("warddiv", crosswalk_year2)
+  names(g1)[names(g1) == "warddiv"] <- idcol
+  
+  crosswalk <- get_crosswalk(g1, divs_19, idcol, "warddiv19")
+  write.csv(
+    crosswalk, 
+    file=paste0("outputs/", "crosswalk_", crosswalk_year2, "_to_19.csv"),
+    row.names = FALSE
+  )
+}
+
+```
+
+```{r crosswalk_votes}
+use_crosswalk <- tribble(
+  ~year, ~election, ~crosswalk_year,
+	2002, "primary", 2005,
+	2002, "general", 2005,
+	2003, "primary", 2005,
+	2003, "general", 2005,
+	2004, "primary", 2005,
+	2004, "general", 2005,
+	2005, "primary", 2005,
+	2005, "general", 2005,
+	2006, "primary", 2005,
+	2006, "general", 2005,
+	2007, "primary", 2005,
+	2007, "general", 2005,
+	2008, "primary", 2008,
+	2008, "general", 2008,
+	2009, "primary", 2008, # broken
+	2009, "general", 2008, # broken
+	2010, "primary", 2009,
+	2010, "general", 2011,
+	2011, "primary", 2011,
+	2011, "general", 2011,
+	2012, "primary", 2011,
+	2012, "general", 2012,
+	2013, "primary", 2013,
+	2013, "general", 2013,
+	2014, "primary", 2016, # Broken
+	2014, "general", 2016, ## maybe?
+	2015, "primary", 2016,
+	2015, "general", 2016,
+	2016, "primary", 2016,
+	2016, "general", 2016,
+	2017, "primary", 2016,
+	2017, "general", 2016,
+  2018, "primary", 2019, # Broken
+  2018, "general", 2019
+)
+
+ALLOW_MISTAKES <- TRUE
+elections_with_mistakes <- data.frame()
+
+for(i in 1:nrow(use_crosswalk)){
+  print(use_crosswalk[i,])
+  
+  year <- use_crosswalk$year[i]
+  election <- use_crosswalk$election[i]
+  crosswalk_year <- use_crosswalk$crosswalk_year[i]
+  
+  election_df <- read.csv(sprintf("data/raw_votes/%s_%s.csv", year, election))
+  election_df <- election_df %>% 
+    mutate(warddiv = paste0(sprintf("%02d", WARD), sprintf("%02d", DIVISION)))
+
+  if(crosswalk_year == "2019"){
+    election_df_19 <- election_df %>% rename(warddiv19 = warddiv)
+  } else {
+    
+    idcol <- paste0("warddiv", substr(crosswalk_year, 3, 4))
+    
+    crosswalk <- read.csv(
+      sprintf("outputs/crosswalk_%s_to_19.csv", substr(crosswalk_year, 3, 4)),
+      colClasses = c(
+        rep("character", ifelse(crosswalk_year == "2019", 1, 2)), 
+        rep("numeric", 3))
+    )  
+    
+    election_df_19 <- election_df %>%
+      left_join(crosswalk, by=c("warddiv"=idcol)) %>%
+      group_by(TYPE, OFFICE, CANDIDATE, PARTY, warddiv19) %>%
+      summarise(VOTES = sum(VOTES * frac_of_g1))
+  }
+  
+  missing_g1 <- sum(!(unique(election_df$warddiv) %in% unique(crosswalk[,idcol])))
+  missing_g2 <- sum(!(unique(crosswalk[,idcol]) %in% unique(election_df$warddiv)))
+  if(missing_g1 > 0 || missing_g2 > 0){
+    if(!ALLOW_MISTAKES) stop("Votes mismatch. Something went wrong.")
+    elections_with_mistakes <- bind_rows(
+      elections_with_mistakes, 
+      data.frame(
+        year=year, 
+        election=election, 
+        lost_votes=sum(election_df$VOTES) - sum(election_df_19$VOTES),
+        total_votes = sum(election_df$VOTES),
+        g1_missing_from_crosswalk=missing_g1,
+        crosswalk_missing_from_g1=missing_g2
+      )
+    )
+  }
+  
+  write.csv(
+    election_df_19, 
+    file=sprintf("outputs/%s_%s_crosswalked_to_19.csv", year, election),
+    row.names=FALSE
+  )
+}
+
+print(elections_with_mistakes)
+```
+
+## That's it!
+We've created a cross
+
+
+## Answers to Exercises
+**What assumptions make the areal apportionment valid?** It assumes that the value was spread uniformly in space in the original boundaries. For example, apportioning 2016 votes to 2019 boundaries using areal weighting assumes that the votes per mile in 2016 was evenly spread within each division (although it will obviously be different for different divisions).
+
+**What assumptions make the population apportionment valid?** It assumes that the population is concentrated at the centroid of the block or that the blocks are entirely contained within one division (since we only use the centroids) and that the 2010 population is proportional to the target metric. The first is true in our case: divisions don't split blocks, so blocks are entirely contained in divisions. The second is wrong, but much less wrong than the areal assumption: votes are more proportional to population than they are to area. We could make this better by using the correct year's population if we had it, or using voting-age population or registered voters instead of census population, but this does a pretty darn good job.
