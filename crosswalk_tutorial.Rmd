@@ -1,8 +1,10 @@
 ---
-title: "crosswalk_tutorial"
+title: "R Tutorial: How I crosswalk past election results"
 author: "Jonathan Tannen"
 date: "June 4, 2019"
-output: html_document
+output: 
+  html_document:
+    self_contained: no
 ---
 
 ```{r setup, include=FALSE}
@@ -19,12 +21,21 @@ knitr::opts_chunk$set(
 setwd("C:/Users/Jonathan Tannen/Dropbox/sixty_six/posts/crosswalk_tutorial/")
 ```
 
-```{r example}
+Philadelphia's past election results are all released based on past division boundaries. In order to make good historical comparisons, it's necessary to apportion these old results into the modern boundaries. This post is a tutorial on how I use R's GIS packages to **crosswalk** old data to present-day boundaries.
+
+> Note: All of the data and resources are available at [https://github.com/jtannen/crosswalk](https://github.com/jtannen/crosswalk). Just want the final crosswalked election data? You can find it in the [outputs folder](https://github.com/jtannen/crosswalk/tree/master/outputs).
+
+For GIS in R, I use the `sf` package, which is a tidyverse-friendly mapping library.
+
+## What is crosswalking?
+
+What's the challenge? Below is a map of the divisions in Philadelphia's 5th Ward, using 2016 and 2019 boundaries.
+
+```{r example, fig.height=6, fig.width=6}
 library(sf)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
-library(ggmap)
 
 sixtysix_colors <- list(
   red="#D0445E",
@@ -103,15 +114,15 @@ ggplot(
   scale_color_identity(guide=FALSE) +
   theme_map_sixtysix() +
   ggtitle("Division change in Ward 5")
-
-
 ```
 
-We have two types of transformations to make. Some divisions from 2016 get split up into multiple 2019 divisions: 2016's division 21 becomes 21, 33, and 34. Also, parts of some 2016 divisions get combined to form new ones: the new division 10 consists of paste of 2016 10 and 26.
+Notice that many of the boundaries changed. Five divisions were added: 05-30 through 05-34. Division 05-03 expanded down into 05-19. Division 05-26 shrank. If we were to naively compare 2016 and 2019 results by division id, we see that 05-21's votes nosedived, while 05-34 went from 0 votes (it was non-existent) to a huge number. What we need to do instead is apportion the votes from the old boundaries to the new ones. 
+
+The challenge is that we don't have the right data to perfectly make that decision. Look at 2016's 05-21. It gets divided into 05-21, 05-33, and 05-34. Should we divide its votes evenly among the three? Should we apportion it based on the area of each division? By population?
 
 ## Areal Weighting
 
-Crosswalking values is usually done pretty simply: we take the counts from the 2016 data, and apportion them to 2019 boundaries. Usually, we do this by calculating the area of the intersection ("areal weighting"):
+A simple, common technique is to apportion values by area. We can calculate the area of each intersection, and give 2016's votes to 2019 boundaries proportional to how much of its area lies in each (this is called "areal weighting"):
 ```{r prop_area}
 areal_weights <- st_intersection(
   divs_16, 
@@ -127,14 +138,14 @@ areal_weights %>%
   filter(warddiv16 == "0521")
 ```
 
-The above shows us that Division 05-21 in 2016 was split up into five divisions for 2019. Two of them--1802 and 0530--look like noise; the areas are tiny and probably represent a trivial move in the boundary. 
+The above shows us that Division 05-21 in 2016 was split up into five divisions for 2019. Two of them--18-02 and 05-30--look like noise; the areas are tiny and probably represent a trivial move in the boundary. 
 
 To apportion 2016's votes to 2019 boundaries, we would give new division 05-34 69.8% of the votes, 05-33 18.5%, and 05-21 11.6%. Done.
 
 > Exercise: What assumptions make this apportionment valid? (answer in appendix)
 
 ## Population Weighting
-I usually do one better than areal weighting: population weighting. Instead of calculating the area of the intersection, I calculate the population living within each intersection. We then apportion 2016 counts proportionally to the population in each boundary. For example, if we knew that all of 2016's division 21 lived in the Southwest of the division, then we would apportion all of its votes to new division 34.
+I usually do one better than areal weighting: population weighting. Instead of calculating the area of the intersection, I calculate the population living in each intersection. We then apportion 2016 counts proportionally to the population in each boundary. For example, 2019's 05-34 lies along the Delaware River, and includes a vast industrial region. It probably represents many fewer votes than its area would suggest. Instead of using the area of each population, we could use the population.
 
 We need fine-scale data to make this calculation. Luckily, the Census provides us with block-level populations every ten years.
 
@@ -241,15 +252,17 @@ head(general_16_crosswalked)
 ```
 We're done! We have 2016's results in 2019 boundaries.
 
+> Note: We could probably do even one better, and geocode the addresses of where people actually voted, using data from [the voter file](https://www.pavoterservices.pa.gov/Pages/PurchasePAFULLVoterExport.aspx) for each year. Maybe I'll get around to that one day...
+
+## Crosswalking all the data
 Just for finality, let's loop through all years and store the outputs. Sounds easy, but... oof.
 
-I've only been able to find shapefiles for divisions from a handful of years. The amazing folks at Azavea and the Commissioners' Office have put together a batch of historical division boundaries, but even their herculean efforts don't perfectly cover all recent elections. I've only got boundaries for 2005, 2008-2013, 2016, and 2019. For each election, I've chosen the boundaries that appear to fit best based on lost votes, but some of them have still lost votes. I document those mistakes below, but please use the division-level results with caution for these years.
+I've only been able to find shapefiles for divisions from a handful of years. The amazing folks at Azavea and the Commissioners' Office have put together [a batch of historical division boundaries](https://www.opendataphilly.org/dataset/political-wards-divisions), but even their herculean efforts don't perfectly cover all recent elections. I've only got boundaries for 2005, 2008-2013, 2016, and 2019. For each election, I've chosen the boundaries that appear to fit best based on divisions being created or destroyed, but I can't know how pesty boundary changes might affect these numbers.
 
 > Note: Have more complete division boundaries? Want to be a hero and create them from the text description of boundaries? Let me know!
 
 ```{r all_years}
 crosswalk_years <- list.dirs("data/division_shapefiles", full.names = F)
-print(crosswalk_years)
 
 for(crosswalk_year in crosswalk_years[!crosswalk_years %in% c("", "2019")]){
   crosswalk_year2 <- substr(crosswalk_year, 3, 4)
@@ -269,7 +282,6 @@ for(crosswalk_year in crosswalk_years[!crosswalk_years %in% c("", "2019")]){
     row.names = FALSE
   )
 }
-
 ```
 
 ```{r crosswalk_votes}
@@ -299,7 +311,7 @@ use_crosswalk <- tribble(
 	2012, "general", 2012,
 	2013, "primary", 2013,
 	2013, "general", 2013,
-	2014, "primary", 2016, 
+	2014, "primary", 2016,
 	2014, "general", 2016,
 	2015, "primary", 2016,
 	2015, "general", 2016,
@@ -317,8 +329,8 @@ fix_colnames <- function(df){
     names(df)[names(df) == oldname] <- newname
     return(df)
   }
-  
-  df <- df %>% 
+
+  df <- df %>%
     replace_name("CATEGORY", "OFFICE") %>%
     replace_name("SELECTION", "CANDIDATE") %>%
     replace_name("VOTE.COUNT", "VOTES")
@@ -332,48 +344,46 @@ elections_with_mistakes <- data.frame()
 
 for(i in 1:nrow(use_crosswalk)){
   if(VERBOSE) print(use_crosswalk[i,])
-  
+
   year <- use_crosswalk$year[i]
   election <- use_crosswalk$election[i]
   crosswalk_year <- use_crosswalk$crosswalk_year[i]
-  
+
   election_df <- read.csv(sprintf("data/raw_votes/%s_%s.csv", year, election))
   election_df <- fix_colnames(election_df)
-  election_df <- election_df %>% 
+  election_df <- election_df %>%
     mutate(warddiv = paste0(sprintf("%02d", WARD), sprintf("%02d", DIVISION)))
-  
+
   if(crosswalk_year == "2019"){
     election_df_19 <- election_df %>% rename(warddiv19 = warddiv)
-    
+
     missing_g1 <- unique(election_df$warddiv)[!(unique(election_df$warddiv) %in% divs_19$warddiv19)]
     missing_g2 <- divs_19$warddiv19[!(divs_19$warddiv19 %in% unique(election_df$warddiv))]
   } else {
     idcol <- paste0("warddiv", substr(crosswalk_year, 3, 4))
-    
+
     crosswalk <- read.csv(
       sprintf("outputs/crosswalk_%s_to_19.csv", substr(crosswalk_year, 3, 4)),
-      colClasses = c(
-        rep("character", ifelse(crosswalk_year == "2019", 1, 2)), 
-        rep("numeric", 3))
-    )  
-    
+      colClasses = c(rep("character", 2), rep("numeric", 3))
+    )
+
     election_df_19 <- election_df %>%
       left_join(crosswalk, by=c("warddiv"=idcol)) %>%
       group_by(TYPE, OFFICE, CANDIDATE, PARTY, warddiv19) %>%
       summarise(VOTES = sum(VOTES * frac_of_g1))
-    
+
     missing_g1 <- unique(election_df$warddiv)[!(unique(election_df$warddiv) %in% unique(crosswalk[,idcol]))]
     missing_g2 <- unique(crosswalk[,idcol])[!(unique(crosswalk[,idcol]) %in% unique(election_df$warddiv))]
   }
-  
+
 
   if(length(missing_g1) > 0 || length(missing_g2) > 0){
     if(!ALLOW_MISTAKES) stop("Votes mismatch. Something went wrong.")
     elections_with_mistakes <- bind_rows(
-      elections_with_mistakes, 
+      elections_with_mistakes,
       data.frame(
-        year=year, 
-        election=election, 
+        year=year,
+        election=election,
         lost_votes=sum(election_df$VOTES) - sum(election_df_19$VOTES),
         total_votes = sum(election_df$VOTES),
         g1_missing_from_crosswalk=paste(missing_g1, collapse=","),
@@ -381,9 +391,9 @@ for(i in 1:nrow(use_crosswalk)){
       )
     )
   }
-  
+
   write.csv(
-    election_df_19, 
+    election_df_19,
     file=sprintf("outputs/%s_%s_crosswalked_to_19.csv", year, election),
     row.names=FALSE
   )
@@ -394,19 +404,24 @@ print(elections_with_mistakes)
 
 Notice above the three elections with flagged mistakes. For the 2009 results, the 2008 crosswalk that I used was expecting three divisions that weren't actually in the 2009 results. This is a problem; it means that I over-apportioned those votes somewhere else. The boundaries for 2009 aren't any better, six divisions are missing. This isn't the end of the world, three out of 1,681 divisions isn't terrible. And the ward-level results will still be right. But don't trust the division-level results for the 49th ward in 2009. 
 
-Similarly, the 2018 primary had two divisions that weren't in the 2016 map, 0530 and 0531, but was missing four divisions that were used in the general: 1818, 0532-0534. I use the 2019 boundaries, to avoid losing votes. Instead, 1818 et al will be assumed to have 0 votes (which isn't great either).
+Similarly, the 2018 primary had two divisions that weren't in the 2016 map, 05-30 and 05-31, but was missing four divisions that were used in the general: 18-18, 05-32, 05-33, and 05-34. I've used the 2019 boundaries, to avoid losing votes. Instead, 18-18 et al will be assumed to have 0 votes (which isn't great either).
 
-The fact that only 2009 is flagged isn't dispositive proof that the other crosswalks were perfect: the boundaries could have moved without creating or removing division numbers, which is all that we're checking. 
+The fact that only these three elections are flagged isn't dispositive proof that the other crosswalks were perfect: the boundaries could have moved without creating or removing division numbers, which is all that we're checking. 
 
-I'll keep looking for shapefiles, and will update the repo as I find them, but for the time being this is probably the best we can do.
-
+I'll keep looking for shapefiles, and will update [the repo]() as I find them, but for the time being this is probably the best we can do.
 
 
 ## That's it!
-We've created our crosswalks! 
+We've created our crosswalks.
+
+You can download the resulting data from the [outputs folder](https://github.com/jtannen/crosswalk/tree/master/outputs).
+
+You may be uncomfortable with the simplicity of the assumptions above. This method usually does a darn good job of getting sensible data, but you might imagine some extensions:
+- Using annual voter file weights instead of Decennial Census populations.
+- A model-based Bayesian approach that uses similarities in voting patterns across years to guess which votes came from where. You could additionally use race and income data, which is released by the census at the Block level. These methods risk the [Ecological Fallacy](https://en.wikipedia.org/wiki/Ecological_fallacy), but not in a worse way than what we're already doing.
 
 
-## Answers to Exercises
+# Answers to Exercises
 **What assumptions make the areal apportionment valid?** It assumes that the value was spread uniformly in space in the original boundaries. For example, apportioning 2016 votes to 2019 boundaries using areal weighting assumes that the votes per mile in 2016 was evenly spread within each division (although it will obviously be different for different divisions).
 
 **What assumptions make the population apportionment valid?** It assumes that the population is concentrated at the centroid of the block or that the blocks are entirely contained within one division (since we only use the centroids) and that the 2010 population is proportional to the target metric. The first is true in our case: divisions don't split blocks, so blocks are entirely contained in divisions. The second is wrong, but much less wrong than the areal assumption: votes are more proportional to population than they are to area. We could make this better by using the correct year's population if we had it, or using voting-age population or registered voters instead of census population, but this does a pretty darn good job.
