@@ -122,11 +122,11 @@ The challenge is that we don't have the right data to perfectly make that decisi
 
 ## Areal Weighting
 
-A simple, common technique is to apportion values by area. We can calculate the area of each intersection, and give 2016's votes to 2019 boundaries proportional to how much of its area lies in each (this is called "areal weighting"):
+A simple, common technique is to apportion values by area. We can calculate the area of each intersection, and give 2016's votes to 2019 boundaries proportional to how much of its area lies in each (this is called "areal weighting"). We'll reproject them to EPSG:2272 (the PA South State Plane) to get the most accurate areas:
 ```{r prop_area}
 areal_weights <- st_intersection(
-  divs_16, 
-  divs_19
+  st_transform(divs_16, 2272), 
+  st_transform(divs_19, 2272)
 ) %>% 
   mutate(area = st_area(geometry)) %>% 
   as.data.frame() %>% 
@@ -163,6 +163,74 @@ phila_block_pops <- read.csv(
 
 phila_blocks <- left_join(phila_blocks, phila_block_pops)
 ```
+
+Here are the 2010 populations of the Census Blocks of the area. 
+
+```{r block_map}
+ward_05_blocks <- sapply(
+  phila_blocks %>% st_within(divs_19 %>% filter(WARD == "05")),
+  length
+) == 1
+ward_05_blocks <- phila_blocks[ward_05_blocks,] %>%
+  mutate(x = st_coordinates(geometry)[,1],
+         y = st_coordinates(geometry)[,2])
+
+ggplot(
+  divs_16 %>% filter(WARD == "05")
+) +
+  geom_point(
+    data = ward_05_blocks, 
+    aes(x=x,y=y,size = pop10),
+    alpha = 0.3,
+    pch = 16,
+    color=sixtysix_colors$blue
+  ) +
+  scale_size_area(guide=FALSE) +
+  expand_limits(size=0) +
+  geom_sf(
+    color = sixtysix_colors$light_red,
+    size=2, 
+    fill=NA
+  ) + 
+  geom_text(
+    aes(x=X, y=Y, label = DIVSN),
+    data = with(
+      divs_16 %>% filter(WARD == "05"),
+      data.frame(DIVSN, st_centroid(geometry) %>% st_coordinates())
+    ),
+    color=sixtysix_colors$light_red,
+    size=4,
+    fontface="bold"
+  ) +
+  geom_sf(
+    data=divs_19 %>% filter(WARD == "05"),
+    color = "black",
+    size=1,
+    fill=NA
+  ) +
+  geom_text(
+    aes(x=X, y=Y, label = SHORT_DIV_),
+    data = with(
+      divs_19 %>% filter(WARD == "05"),
+      data.frame(SHORT_DIV_, st_centroid(geometry) %>% st_coordinates())
+    ),
+    color="black",
+    size=4
+  ) +
+  geom_text(
+    aes(label=year, x=x, y=y, fontface=fontface, color=color),
+    data=tribble(
+      ~year, ~x, ~y, ~fontface, ~color,
+      2016, -75.12607, 39.941, "bold", sixtysix_colors$light_red,
+      2019, -75.12607, 39.943, "plain", "black"
+    ),
+    hjust=1
+  ) +
+  scale_color_identity(guide=FALSE) +
+  theme_map_sixtysix() +
+  ggtitle("Division change in Ward 5", "Dots are 2010 Census Block Populations")
+```
+The goal is simple: to add up the blue dots inside of each intersection, and apportion votes that way.
 
 ```{r get_pop_of_geoms}
 get_pop_of_geoms <- function(g, idcol, blocks=phila_blocks){

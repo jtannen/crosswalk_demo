@@ -163,14 +163,26 @@ divs_16 &lt;- st_read(&quot;data/division_shapefiles/2016/2016_Ward_Divisions.sh
     DIVSN = sprintf(&quot;%02d&quot;, DIVSN),
     WARD = sprintf(&quot;%02d&quot;, WARD)
   ) %&gt;%
-  st_transform(4326)
-  
-divs_19 &lt;- st_read(&quot;data/division_shapefiles/2019/Political_Divisions.shp&quot;) %&gt;%
+  st_transform(4326)</code></pre>
+<pre><code>## Reading layer `2016_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2016\2016_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1686 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs</code></pre>
+<pre class="r"><code>divs_19 &lt;- st_read(&quot;data/division_shapefiles/2019/Political_Divisions.shp&quot;) %&gt;%
   rename(warddiv19 = DIVISION_N) %&gt;%
   mutate(WARD = substr(warddiv19, 1, 2))%&gt;%
-  st_transform(4326)
-  
-ggplot(
+  st_transform(4326)</code></pre>
+<pre><code>## Reading layer `Political_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2019\Political_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1692 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: -75.28031 ymin: 39.86748 xmax: -74.95574 ymax: 40.13793
+## epsg (SRID):    4326
+## proj4string:    +proj=longlat +datum=WGS84 +no_defs</code></pre>
+<pre class="r"><code>ggplot(
   divs_16 %&gt;% filter(WARD == &quot;05&quot;)
 ) +
     geom_sf(
@@ -221,10 +233,10 @@ ggplot(
 </div>
 <div id="areal-weighting" class="section level2">
 <h2>Areal Weighting</h2>
-<p>A simple, common technique is to apportion values by area. We can calculate the area of each intersection, and give 2016’s votes to 2019 boundaries proportional to how much of its area lies in each (this is called “areal weighting”):</p>
+<p>A simple, common technique is to apportion values by area. We can calculate the area of each intersection, and give 2016’s votes to 2019 boundaries proportional to how much of its area lies in each (this is called “areal weighting”). We’ll reproject them to EPSG:2272 (the PA South State Plane) to get the most accurate areas:</p>
 <pre class="r"><code>areal_weights &lt;- st_intersection(
-  divs_16, 
-  divs_19
+  st_transform(divs_16, 2272), 
+  st_transform(divs_19, 2272)
 ) %&gt;% 
   mutate(area = st_area(geometry)) %&gt;% 
   as.data.frame() %&gt;% 
@@ -236,13 +248,13 @@ areal_weights %&gt;%
   filter(warddiv16 == &quot;0521&quot;)</code></pre>
 <pre><code>## # A tibble: 5 x 4
 ## # Groups:   warddiv16 [1]
-##   warddiv16 warddiv19             area   prop_of_16
-##      &lt;fctr&gt;    &lt;fctr&gt;      &lt;S3: units&gt;        &lt;dbl&gt;
-## 1      0521      1802     66.16341 m^2 6.830745e-05
-## 2      0521      0530    918.91200 m^2 9.486896e-04
-## 3      0521      0534 676270.02908 m^2 6.981847e-01
-## 4      0521      0533 179224.47653 m^2 1.850323e-01
-## 5      0521      0521 112132.32843 m^2 1.157660e-01</code></pre>
+##   warddiv16 warddiv19                          area   prop_of_16
+##      &lt;fctr&gt;    &lt;fctr&gt;                   &lt;S3: units&gt;        &lt;dbl&gt;
+## 1      0521      1802     712.1734 US_survey_foot^2 6.830801e-05
+## 2      0521      0530    9891.1043 US_survey_foot^2 9.487038e-04
+## 3      0521      0534 7279215.1422 US_survey_foot^2 6.981848e-01
+## 4      0521      0533 1929128.9079 US_survey_foot^2 1.850321e-01
+## 5      0521      0521 1206966.6049 US_survey_foot^2 1.157660e-01</code></pre>
 <p>The above shows us that Division 05-21 in 2016 was split up into five divisions for 2019. Two of them–18-02 and 05-30–look like noise; the areas are tiny and probably represent a trivial move in the boundary.</p>
 <p>To apportion 2016’s votes to 2019 boundaries, we would give new division 05-34 69.8% of the votes, 05-33 18.5%, and 05-21 11.6%. Done.</p>
 <blockquote>
@@ -254,9 +266,15 @@ areal_weights %&gt;%
 <p>I usually do one better than areal weighting: population weighting. Instead of calculating the area of the intersection, I calculate the population living in each intersection. We then apportion 2016 counts proportionally to the population in each boundary. For example, 2019’s 05-34 lies along the Delaware River, and includes a vast industrial region. It probably represents many fewer votes than its area would suggest. Instead of using the area of each population, we could use the population.</p>
 <p>We need fine-scale data to make this calculation. Luckily, the Census provides us with block-level populations every ten years.</p>
 <pre class="r"><code>phila_blocks &lt;- st_read(&quot;data/census_blocks/tl_2010_42101_tabblock10.shp&quot;) %&gt;%
-  st_transform(4326)
-  
-## We&#39;ll only deal with centroids, since blocks are contained within divisions
+  st_transform(4326)</code></pre>
+<pre><code>## Reading layer `tl_2010_42101_tabblock10&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\census_blocks\tl_2010_42101_tabblock10.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 18872 features and 15 fields
+## geometry type:  MULTIPOLYGON
+## dimension:      XY
+## bbox:           xmin: -75.28027 ymin: 39.867 xmax: -74.95576 ymax: 40.13799
+## epsg (SRID):    4269
+## proj4string:    +proj=longlat +datum=NAD83 +no_defs</code></pre>
+<pre class="r"><code>## We&#39;ll only deal with centroids, since blocks are contained within divisions
 phila_blocks &lt;- st_centroid(phila_blocks)
 
 phila_block_pops &lt;- read.csv(
@@ -265,6 +283,70 @@ phila_block_pops &lt;- read.csv(
 )
 
 phila_blocks &lt;- left_join(phila_blocks, phila_block_pops)</code></pre>
+<p>Here are the 2010 populations of the Census Blocks of the area.</p>
+<pre class="r"><code>ward_05_blocks &lt;- sapply(
+  phila_blocks %&gt;% st_within(divs_19 %&gt;% filter(WARD == &quot;05&quot;)),
+  length
+) == 1
+ward_05_blocks &lt;- phila_blocks[ward_05_blocks,] %&gt;%
+  mutate(x = st_coordinates(geometry)[,1],
+         y = st_coordinates(geometry)[,2])
+
+ggplot(
+  divs_16 %&gt;% filter(WARD == &quot;05&quot;)
+) +
+  geom_point(
+    data = ward_05_blocks, 
+    aes(x=x,y=y,size = pop10),
+    alpha = 0.3,
+    pch = 16,
+    color=sixtysix_colors$blue
+  ) +
+  scale_size_area(guide=FALSE) +
+  expand_limits(size=0) +
+  geom_sf(
+    color = sixtysix_colors$light_red,
+    size=2, 
+    fill=NA
+  ) + 
+  geom_text(
+    aes(x=X, y=Y, label = DIVSN),
+    data = with(
+      divs_16 %&gt;% filter(WARD == &quot;05&quot;),
+      data.frame(DIVSN, st_centroid(geometry) %&gt;% st_coordinates())
+    ),
+    color=sixtysix_colors$light_red,
+    size=4,
+    fontface=&quot;bold&quot;
+  ) +
+  geom_sf(
+    data=divs_19 %&gt;% filter(WARD == &quot;05&quot;),
+    color = &quot;black&quot;,
+    size=1,
+    fill=NA
+  ) +
+  geom_text(
+    aes(x=X, y=Y, label = SHORT_DIV_),
+    data = with(
+      divs_19 %&gt;% filter(WARD == &quot;05&quot;),
+      data.frame(SHORT_DIV_, st_centroid(geometry) %&gt;% st_coordinates())
+    ),
+    color=&quot;black&quot;,
+    size=4
+  ) +
+  geom_text(
+    aes(label=year, x=x, y=y, fontface=fontface, color=color),
+    data=tribble(
+      ~year, ~x, ~y, ~fontface, ~color,
+      2016, -75.12607, 39.941, &quot;bold&quot;, sixtysix_colors$light_red,
+      2019, -75.12607, 39.943, &quot;plain&quot;, &quot;black&quot;
+    ),
+    hjust=1
+  ) +
+  scale_color_identity(guide=FALSE) +
+  theme_map_sixtysix() +
+  ggtitle(&quot;Division change in Ward 5&quot;, &quot;Dots are 2010 Census Block Populations&quot;)</code></pre>
+<p><img src="crosswalk_tutorial_files/figure-html/block_map-1.png" width="1800" /> The goal is simple: to add up the blue dots inside of each intersection, and apportion votes that way.</p>
 <pre class="r"><code>get_pop_of_geoms &lt;- function(g, idcol, blocks=phila_blocks){
   if(st_crs(g) != st_crs(blocks)) stop(&quot;g and blocks must have same crs.&quot;)
   intersection &lt;- st_intersects(blocks, g)
@@ -411,9 +493,64 @@ for(crosswalk_year in crosswalk_years[!crosswalk_years %in% c(&quot;&quot;, &quo
     file=paste0(&quot;outputs/&quot;, &quot;crosswalk_&quot;, crosswalk_year2, &quot;_to_19.csv&quot;),
     row.names = FALSE
   )
-}
-
-use_crosswalk &lt;- tribble(
+}</code></pre>
+<pre><code>## Reading layer `2005_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2005\2005_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1683 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2008_12_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2008\2008_12_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1683 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2009_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2009\2009_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1684 features and 5 fields
+## geometry type:  MULTIPOLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204651 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2010_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2010\2010_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1684 features and 5 fields
+## geometry type:  MULTIPOLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2011_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2011\2011_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1687 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2012_09_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2012\2012_09_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1687 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2013_02_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2013\2013_02_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1687 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs
+## Reading layer `2016_Ward_Divisions&#39; from data source `C:\Users\Jonathan Tannen\Dropbox\sixty_six\posts\crosswalk_tutorial\data\division_shapefiles\2016\2016_Ward_Divisions.shp&#39; using driver `ESRI Shapefile&#39;
+## Simple feature collection with 1686 features and 5 fields
+## geometry type:  POLYGON
+## dimension:      XY
+## bbox:           xmin: 2660575 ymin: 204817.1 xmax: 2750115 ymax: 304942.4
+## epsg (SRID):    NA
+## proj4string:    +proj=lcc +lat_1=39.93333333333333 +lat_2=40.96666666666667 +lat_0=39.33333333333334 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=us-ft +no_defs</code></pre>
+<pre class="r"><code>use_crosswalk &lt;- tribble(
   ~year, ~election, ~crosswalk_year,
     2002, &quot;primary&quot;, 2005,
     2002, &quot;general&quot;, 2005,
@@ -439,7 +576,7 @@ use_crosswalk &lt;- tribble(
     2012, &quot;general&quot;, 2012,
     2013, &quot;primary&quot;, 2013,
     2013, &quot;general&quot;, 2013,
-    2014, &quot;primary&quot;, 2016, 
+    2014, &quot;primary&quot;, 2016,
     2014, &quot;general&quot;, 2016,
     2015, &quot;primary&quot;, 2016,
     2015, &quot;general&quot;, 2016,
@@ -447,8 +584,8 @@ use_crosswalk &lt;- tribble(
     2016, &quot;general&quot;, 2016,
     2017, &quot;primary&quot;, 2016,
     2017, &quot;general&quot;, 2016,
-    2018, &quot;primary&quot;, 2019,
-    2018, &quot;general&quot;, 2019
+  2018, &quot;primary&quot;, 2019,
+  2018, &quot;general&quot;, 2019
 )
 
 fix_colnames &lt;- function(df){
@@ -457,8 +594,8 @@ fix_colnames &lt;- function(df){
     names(df)[names(df) == oldname] &lt;- newname
     return(df)
   }
-  
-  df &lt;- df %&gt;% 
+
+  df &lt;- df %&gt;%
     replace_name(&quot;CATEGORY&quot;, &quot;OFFICE&quot;) %&gt;%
     replace_name(&quot;SELECTION&quot;, &quot;CANDIDATE&quot;) %&gt;%
     replace_name(&quot;VOTE.COUNT&quot;, &quot;VOTES&quot;)
@@ -472,46 +609,46 @@ elections_with_mistakes &lt;- data.frame()
 
 for(i in 1:nrow(use_crosswalk)){
   if(VERBOSE) print(use_crosswalk[i,])
-  
+
   year &lt;- use_crosswalk$year[i]
   election &lt;- use_crosswalk$election[i]
   crosswalk_year &lt;- use_crosswalk$crosswalk_year[i]
-  
+
   election_df &lt;- read.csv(sprintf(&quot;data/raw_votes/%s_%s.csv&quot;, year, election))
   election_df &lt;- fix_colnames(election_df)
-  election_df &lt;- election_df %&gt;% 
+  election_df &lt;- election_df %&gt;%
     mutate(warddiv = paste0(sprintf(&quot;%02d&quot;, WARD), sprintf(&quot;%02d&quot;, DIVISION)))
-  
+
   if(crosswalk_year == &quot;2019&quot;){
     election_df_19 &lt;- election_df %&gt;% rename(warddiv19 = warddiv)
-    
+
     missing_g1 &lt;- unique(election_df$warddiv)[!(unique(election_df$warddiv) %in% divs_19$warddiv19)]
     missing_g2 &lt;- divs_19$warddiv19[!(divs_19$warddiv19 %in% unique(election_df$warddiv))]
   } else {
     idcol &lt;- paste0(&quot;warddiv&quot;, substr(crosswalk_year, 3, 4))
-    
+
     crosswalk &lt;- read.csv(
       sprintf(&quot;outputs/crosswalk_%s_to_19.csv&quot;, substr(crosswalk_year, 3, 4)),
       colClasses = c(rep(&quot;character&quot;, 2), rep(&quot;numeric&quot;, 3))
-    )  
-    
+    )
+
     election_df_19 &lt;- election_df %&gt;%
       left_join(crosswalk, by=c(&quot;warddiv&quot;=idcol)) %&gt;%
       group_by(TYPE, OFFICE, CANDIDATE, PARTY, warddiv19) %&gt;%
       summarise(VOTES = sum(VOTES * frac_of_g1))
-    
+
     missing_g1 &lt;- unique(election_df$warddiv)[!(unique(election_df$warddiv) %in% unique(crosswalk[,idcol]))]
     missing_g2 &lt;- unique(crosswalk[,idcol])[!(unique(crosswalk[,idcol]) %in% unique(election_df$warddiv))]
   }
-  
+
 
   if(length(missing_g1) &gt; 0 || length(missing_g2) &gt; 0){
     if(!ALLOW_MISTAKES) stop(&quot;Votes mismatch. Something went wrong.&quot;)
     elections_with_mistakes &lt;- bind_rows(
-      elections_with_mistakes, 
+      elections_with_mistakes,
       data.frame(
-        year=year, 
-        election=election, 
+        year=year,
+        election=election,
         lost_votes=sum(election_df$VOTES) - sum(election_df_19$VOTES),
         total_votes = sum(election_df$VOTES),
         g1_missing_from_crosswalk=paste(missing_g1, collapse=&quot;,&quot;),
@@ -519,19 +656,23 @@ for(i in 1:nrow(use_crosswalk)){
       )
     )
   }
-  
+
   write.csv(
-    election_df_19, 
+    election_df_19,
     file=sprintf(&quot;outputs/%s_%s_crosswalked_to_19.csv&quot;, year, election),
     row.names=FALSE
   )
 }
 
 print(elections_with_mistakes)</code></pre>
-<pre><code>##   year election lost_votes total_votes g1_missing_from_crosswalk   crosswalk_missing_from_g1
-## 1 2009  primary          0     1564872            4923,4924,4925                          
-## 2 2009  general          0     1816570            4923,4924,4925                          
-## 3 2018  primary          0     1305757       1818,0532,0534,0533                          
+<pre><code>##   year election lost_votes total_votes g1_missing_from_crosswalk
+## 1 2009  primary          0     1564872                          
+## 2 2009  general          0     1816570                          
+## 3 2018  primary          0     1305757                          
+##   crosswalk_missing_from_g1
+## 1            4923,4924,4925
+## 2            4923,4924,4925
+## 3       1818,0532,0534,0533</code></pre>
 <p>Notice above the three elections with flagged mistakes. For the 2009 results, the 2008 crosswalk that I used was expecting three divisions that weren’t actually in the 2009 results. This is a problem; it means that I over-apportioned those votes somewhere else. The boundaries for 2009 aren’t any better, six divisions are missing. This isn’t the end of the world, three out of 1,681 divisions isn’t terrible. And the ward-level results will still be right. But don’t trust the division-level results for the 49th ward in 2009.</p>
 <p>Similarly, the 2018 primary had two divisions that weren’t in the 2016 map, 05-30 and 05-31, but was missing four divisions that were used in the general: 18-18, 05-32, 05-33, and 05-34. I’ve used the 2019 boundaries, to avoid losing votes. Instead, 18-18 et al will be assumed to have 0 votes (which isn’t great either).</p>
 <p>The fact that only these three elections are flagged isn’t dispositive proof that the other crosswalks were perfect: the boundaries could have moved without creating or removing division numbers, which is all that we’re checking.</p>
@@ -539,8 +680,8 @@ print(elections_with_mistakes)</code></pre>
 </div>
 <div id="thats-it" class="section level2">
 <h2>That’s it!</h2>
-<p>We’ve created our crosswalks!</p>
-<p>You can download the results from the <a href="https://github.com/jtannen/crosswalk/tree/master/outputs">outputs folder</a>.</p>
+<p>We’ve created our crosswalks.</p>
+<p>You can download the resulting data from the <a href="https://github.com/jtannen/crosswalk/tree/master/outputs">outputs folder</a>.</p>
 <p>You may be uncomfortable with the simplicity of the assumptions above. This method usually does a darn good job of getting sensible data, but you might imagine some extensions: - Using annual voter file weights instead of Decennial Census populations. - A model-based Bayesian approach that uses similarities in voting patterns across years to guess which votes came from where. You could additionally use race and income data, which is released by the census at the Block level. These methods risk the <a href="https://en.wikipedia.org/wiki/Ecological_fallacy">Ecological Fallacy</a>, but not in a worse way than what we’re already doing.</p>
 </div>
 <div id="answers-to-exercises" class="section level1">
